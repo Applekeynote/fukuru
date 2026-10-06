@@ -1,0 +1,21 @@
+const assert=require('node:assert/strict');
+const N=require('../assets/navigation.js');
+const origin={lat:35,lon:139},corner={lat:35.001,lon:139},end={lat:35.001,lon:139.001};
+const route={path:[origin,corner,end],steps:[{start:corner,maneuver:'TURN_RIGHT',text:'右折'}],mode:'WALKING',durationMillis:240000};
+const engine=N.create();engine.setRoute(route);assert.equal(engine.snapshot().state,'PLANNING');
+const fix=(p,t,speed=1,accuracy=5)=>engine.fix({...p,timestamp:t,speed,accuracy},t);
+fix(origin,65000);engine.heading(0);engine.start();assert.equal(engine.snapshot(65000).state,'WALKING');
+fix({lat:35.00075,lon:139},105000);assert.equal(engine.snapshot(105000).state,'DECISION_POINT');assert.equal(engine.snapshot(105000).gateStage,1);
+fix({lat:35.0009,lon:139},110000);assert.equal(engine.snapshot(110000).gateStage,2);
+engine.setHazards([{point:corner,type:'crossing'}]);assert.equal(engine.snapshot(110000).state,'HAZARD_ZONE');assert.equal(engine.snapshot(110000).policy.coins,false);assert.equal(engine.snapshot(110000).policy.character,false);
+engine.setHazards([]);fix({lat:35.0009,lon:139},115000,5);assert.equal(engine.snapshot(115000).state,'CYCLING');assert.equal(engine.snapshot(115000).policy.street,false);assert.equal(engine.snapshot(115000).policy.coins,false);
+fix({lat:35.0009,lon:139},120000,12);assert.equal(engine.snapshot(120000).state,'DRIVING');assert.equal(engine.snapshot(120000).policy.camera,false);
+fix({lat:35.0009,lon:139},125000,0);assert.equal(engine.snapshot(136000).state,'STOPPED');assert.equal(engine.snapshot(136000).policy.detail,true);
+assert.equal(engine.snapshot(150000).confidence,'LOW');assert.equal(engine.snapshot(150000).policy.pace,false);assert.equal(engine.snapshot(150000).policy.compass,false);
+for(let i=0;i<4;i++)fix(end,155000+i*5000,0);assert.equal(engine.snapshot(170000).state,'ARRIVED');engine.setHazards([{point:end,type:'crossing'}]);assert.equal(engine.snapshot(170000).state,'HAZARD_ZONE');engine.setHazards([]);assert.equal(engine.snapshot(170000).state,'ARRIVED');engine.clearRoute();assert.equal(engine.snapshot(170000).geometry.path.length,0);
+const geo=N.geometry(route.path),matched=N.match(geo,{lat:35.0005,lon:139});assert(matched.progress>50&&matched.progress<60);assert(matched.offRoute<.1);assert(N.segments(geo,0,true)[0].opacity>N.segments(N.geometry([{lat:35,lon:139},{lat:35.01,lon:139}]),0,true)[1].opacity);
+assert.equal(N.confidence({...end,accuracy:4,timestamp:100000},0,100000,null),'MEDIUM');assert.equal(N.confidence({...end,accuracy:4,timestamp:100000},0,100000,{verified:true,accuracy:2,timestamp:100000}),'HIGH');
+for(const state of N.STATES){assert.equal(N.policy(state,'DRIVING','HIGH').camera,false);assert.equal(N.policy(state,'BICYCLING','HIGH').coins,false);assert.equal(N.policy(state,'DRIVING','HIGH').street,state==='PLANNING'||state==='STOPPED');}
+const Reward=require('../assets/navigation-rewards.js');let time=200000,calls=[],fail=false;
+const rewards=Reward.create({clock:()=>time,uuid:()=> 'request',request:async(path,body)=>{calls.push({path,body});if(path.endsWith('session'))return {route_session_id:'session',nonce:'n1',expires_at:10000,coins:[{coin_id:'c1',status:'available'}],reward_count:0};if(fail)throw Error('network');return {sequence:body.sequence,nonce:'n2',collected:['c1'],reward_count:1};}});
+(async()=>{await rewards.open(route,'venue');fail=true;await rewards.sample({...origin,timestamp:time,accuracy:5});assert.equal(rewards.view().reward_count,0,'client must not credit on failed request');time+=5000;fail=false;await rewards.sample({...end,timestamp:time,accuracy:5});assert.deepEqual(calls[1].body,calls[2].body,'retry uses immutable nonce/evidence');assert.equal(rewards.view().reward_count,1);rewards.reset();assert.equal(rewards.view(),null);console.log('PASS navigation states, safety fade, speed reduction, arrival, confidence, route matching, server-only rewards and immutable retries');})().catch(e=>{console.error(e);process.exitCode=1});

@@ -1,0 +1,95 @@
+const assert=require('node:assert/strict');
+const {spawn}=require('node:child_process');
+const fs=require('node:fs');const os=require('node:os');const path=require('node:path');const {randomUUID}=require('node:crypto');
+const dir=fs.mkdtempSync(path.join(os.tmpdir(),'spatial-community-test-'));const port=8791,base=process.env.COMMUNITY_BASE_URL||`http://127.0.0.1:${port}`;
+const server=process.env.COMMUNITY_BASE_URL?null:spawn(path.resolve(process.platform==='win32'?'target/debug/spatial_community.exe':'target/debug/spatial_community'),[],{env:{...process.env,PORT:String(port),PUBLIC_ORIGIN:base,ATLAS_PUBLIC:'false',ATLAS_STORE:'local',ATLAS_COMMUNITY_DB:path.join(dir,'test.db')},windowsHide:true,stdio:['ignore','pipe','pipe']});
+let output='';server?.stderr.on('data',b=>output+=b);server?.stdout.on('data',b=>output+=b);
+const client=()=>({cookies:{},csrf:'',id:''});
+async function req(c,url,body){const response=await fetch(base+url,{method:body?'POST':'GET',headers:{Origin:base,Cookie:Object.entries(c.cookies).map(([k,v])=>k+'='+v).join('; '),...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify({csrf:c.csrf,...body}):undefined});for(const h of response.headers.getSetCookie()){const [k,v]=h.split(';')[0].split('=');c.cookies[k]=v;}const text=await response.text();let data;try{data=JSON.parse(text)}catch{data=text}return{status:response.status,data};}
+async function boot(c){const r=await req(c,'/api/bootstrap');assert.equal(r.status,200);c.csrf=r.data.csrf;c.id=r.data.me?.id||'';return r.data;}
+const act=(c,op,v={})=>req(c,'/api/action',{op,request_id:randomUUID(),...v});
+(async()=>{try{
+ let ready=false;for(let i=0;i<100;i++){try{if((await fetch(base+'/api/health')).ok){ready=true;break}}catch{}await new Promise(r=>setTimeout(r,100));}assert.ok(ready,'Health endpoint must succeed before API acceptance tests');
+ const suffix=randomUUID().slice(0,8);const a=client(),b=client(),c=client();for(const [n,u]of[['alice',a],['bob',b],['carol',c]]){await boot(u);assert.equal((await req(u,'/api/auth',{mode:'register',handle:n+'_'+suffix,name:n==='alice'?'Alice':'検証専用 '+n,password:'Fixture!'+randomUUID()})).status,200);await boot(u);}assert.notEqual(a.id,b.id);
+ assert.equal((await req(c,'/api/auth',{mode:'register',handle:'ALICE_'+suffix.toUpperCase(),name:'duplicate',password:'Fixture!duplicate123'})).status,400);
+ const safety=await act(b,'emergency',{reason:'danger',detail:'A dangerous meeting location needs an urgent review.'});assert.equal(safety.status,200);
+ assert.equal((await boot(b)).cases.some(x=>x.id===safety.data.id&&x.status==='open'),true);
+ assert.equal((await boot(c)).cases.some(x=>x.id===safety.data.id),false,'safety case status is private to the reporter');
+ assert.equal((await act(c,'moderate',{id:safety.data.id,resolution:'closed',review_note:'Unauthorized review'})).status,400);
+ const start=new Date(Date.now()+86400000).toISOString(),end=new Date(Date.now()+90000000).toISOString();const input={name:'Acceptance event',description:'A bounded test fixture',place:'Tokyo',kind:'ART',start,end,lat:35.6984,lon:139.7731,floor:-2,entrance:'東入口からエレベーターで地下2階へ',venue_rights:true,location_confirmed:true,location_precision:'entrance'};const created=await act(a,'event',input);assert.equal(created.status,200);const eid=created.data.id,rid='event-'+eid;
+ assert.equal((await act(a,'event',{...input,floor:2.5})).status,400);
+ assert.equal((await act(a,'event',{...input,floor:201})).status,400);
+ assert.equal((await act(a,'event',{...input,entrance:'x'.repeat(601)})).status,400);
+ const venue=(await boot(a)).events.find(e=>e.id===eid);assert.equal(venue.floor,-2);assert.equal(venue.entrance,input.entrance);
+ const exported=await req(a,'/api/export');assert.equal(exported.status,200);assert.equal(exported.data.format,'spatial-personal-export-v1');assert.equal(exported.data.account.id,a.id);assert.ok(exported.data.records.some(x=>x.scope==='event'&&x.id===eid));assert.equal(JSON.stringify(exported.data).includes('password_hash'),false);
+ assert.notEqual((await req(client(),'/api/export')).status,200,'personal export requires a session');
+ assert.equal(venue.demo,false,'real event must remain discoverable');
+ assert.equal((await act(a,'event',{...input,name:'venue permission omitted',venue_rights:false})).status,400);
+ assert.equal((await act(a,'event',{...input,name:'location unchecked',location_confirmed:false})).status,400);
+ const demoCreated=await act(b,'event',{...input,name:'【検証専用】Map demo',venue_rights:false});assert.equal(demoCreated.status,200);
+ const demoVenue=(await boot(b)).events.find(e=>e.id===demoCreated.data.id);assert.equal(demoVenue.demo,true);assert.equal(demoVenue.venue_rights,false);
+ assert.equal((await act(c,'rsvp',{id:demoCreated.data.id,status:'going'})).status,400);
+ assert.equal((await req(b,'/api/google-event',{id:demoCreated.data.id})).status,400);
+ assert.ok(!(await req(b,'/calendar.ics?id='+demoCreated.data.id)).data.includes('UID:'+demoCreated.data.id));
+ assert.equal((await act(b,'event',{...input,id:eid,name:'Unauthorised edit'})).status,400);
+ assert.equal((await act(b,'notice',{id:eid,body:'forged announcement'})).status,400);
+ assert.equal((await act(a,'notice',{id:eid,body:'Host notice: this is a test, no public gathering.'})).status,200);
+ assert.equal((await boot(c)).events.find(x=>x.id===eid).notices[0].body,'Host notice: this is a test, no public gathering.');
+ assert.equal((await act(a,'notice',{id:eid,body:'x'.repeat(1001)})).status,400);
+ const qr=await req(c,'/access-qr.svg');assert.equal(qr.status,200);assert.match(qr.data,/<svg/);assert.ok(!qr.data.includes('spatial_session'));
+ assert.equal((await act(b,'rsvp',{id:eid,status:'interested'})).status,200);assert.equal((await req(b,`/api/thread?scope=room&id=${rid}`)).status,403);
+ assert.equal((await act(b,'rsvp',{id:eid,status:'going'})).status,200);assert.equal((await act(b,'message',{id:rid,body:'Participants only'})).status,200);assert.equal((await act(b,'post',{id:eid,body:'Public event comment'})).status,200);
+ assert.equal((await act(a,'event',{...input,id:eid,place:'Tokyo Hall'})).status,200);
+ const changeAlert=(await boot(b)).alerts.find(x=>x.event===eid&&!x.read_at);assert.ok(changeAlert);assert.ok(changeAlert.changed.includes('place'));
+ assert.equal((await act(b,'ack_alert',{id:changeAlert.id})).status,200);assert.ok((await boot(b)).alerts.find(x=>x.id===changeAlert.id).read_at);
+ assert.equal((await act(c,'ack_alert',{id:changeAlert.id})).status,400);
+ assert.equal((await req(c,`/api/thread?scope=room&id=${rid}`)).status,403);assert.equal((await req(c,`/api/thread?scope=event&id=${eid}`)).data.messages[0].body,'Public event comment');
+ const idem={op:'follow',request_id:randomUUID(),id:a.id,active:true};assert.equal((await req(b,'/api/action',idem)).status,200);assert.equal((await req(b,'/api/action',idem)).status,200);assert.equal((await req(b,'/api/action',{...idem,active:false})).status,400);assert.equal((await boot(b)).accounts.find(x=>x.id===a.id).followers,1);
+ const room=await act(a,'room',{name:'Private',members:[b.id]});assert.equal(room.status,200);const roomId=room.data.id;
+ assert.equal((await act(c,'message',{id:roomId,body:'intrusion'})).status,400);assert.equal((await req(c,`/api/thread?scope=room&id=${roomId}`)).status,403);
+ assert.equal((await req(b,`/api/thread?scope=room&id=${roomId}`)).status,403,'invited member must opt in');
+ assert.equal((await boot(b)).invitations.some(x=>x.id===roomId),true);
+ assert.equal((await act(b,'room_invitation',{id:roomId,accept:true})).status,200);
+ assert.equal((await req(b,`/api/thread?scope=room&id=${roomId}`)).status,200);
+ const chunk=(type,data)=>{const t=Buffer.from(type);let crc=0xffffffff;for(const x of Buffer.concat([t,data])){crc^=x;for(let i=0;i<8;i++)crc=(crc>>>1)^((crc&1)?0xedb88320:0);}const n=Buffer.alloc(4),c=Buffer.alloc(4);n.writeUInt32BE(data.length);c.writeUInt32BE((crc^0xffffffff)>>>0);return Buffer.concat([n,t,data,c]);};const hdr=Buffer.from([0,0,0,1,0,0,0,1,8,6,0,0,0]);const png=Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',hdr),chunk('IDAT',require('node:zlib').deflateSync(Buffer.from([0,50,120,200,255]))),chunk('IEND',Buffer.alloc(0))]).toString('base64');
+ const image=await req(a,'/api/upload',{data:png});assert.equal(image.status,200,JSON.stringify(image));assert.equal((await act(a,'message',{id:roomId,body:'Private photograph',photo:image.data.url})).status,200);assert.equal((await req(c,image.data.url)).status,404);assert.equal((await req(b,image.data.url)).status,200);assert.equal((await act(b,'leave_room',{id:roomId})).status,200);assert.equal((await req(b,image.data.url)).status,404);
+ const group=await act(a,'room',{name:'Group',members:[b.id,c.id]});assert.equal(group.status,200);assert.equal((await req(c,`/api/thread?scope=room&id=${group.data.id}`)).status,403);assert.equal((await act(c,'room_invitation',{id:group.data.id,accept:true})).status,200);assert.equal((await req(c,`/api/thread?scope=room&id=${group.data.id}`)).status,200);
+ const declined=await act(a,'room',{name:'Declined DM',members:[c.id]});assert.equal(declined.status,200);assert.equal((await act(c,'room_invitation',{id:declined.data.id,accept:false})).status,200);assert.equal((await req(c,`/api/thread?scope=room&id=${declined.data.id}`)).status,403);assert.equal((await boot(c)).invitations.some(x=>x.id===declined.data.id),false);
+ const prefs=await act(b,'notifications',{enabled:true,minutes:10,messages:false});assert.equal(prefs.status,200,JSON.stringify(prefs));const ics=await req(b,'/calendar.ics');assert.equal(ics.status,200);assert.match(ics.data,/TRIGGER:-PT10M/);assert.match(ics.data,new RegExp('UID:'+eid+'@spatial'));
+ assert.equal((await req(c,'/api/action',{csrf:'wrong',op:'rsvp',request_id:randomUUID(),id:eid,status:'going'})).status,403);
+ assert.equal((await act(b,'rsvp',{id:eid,status:'none'})).status,200);assert.equal((await req(b,`/api/thread?scope=room&id=${rid}`)).status,403);
+ assert.equal((await act(a,'event',{...input,id:eid,name:'Acceptance event v2'})).status,200);
+ assert.ok((await boot(a)).events.find(e=>e.id===eid).changes.length>0);
+ assert.equal((await act(b,'report',{kind:'event',id:eid,reason:'misinformation',detail:'test report'})).status,200);
+ assert.equal((await act(b,'block',{id:a.id,active:true})).status,200);
+ assert.equal((await act(b,'follow',{id:a.id,active:true})).status,400);
+ assert.equal((await act(b,'block',{id:a.id,active:false})).status,200);
+ assert.equal((await act(a,'event',{...input,id:eid,status:'canceled',cancel_reason:'検証のため中止'})).status,200);
+ assert.equal((await act(c,'rsvp',{id:eid,status:'going'})).status,400);
+ assert.equal((await boot(c)).events.find(e=>e.id===eid).cancel_reason,'検証のため中止');
+ if(process.env.COMMUNITY_VERIFY_AI==='true'){const ai=await req(b,'/api/insight',{id:eid,query:'この検証用イベントの内容を短く教えて'});assert.equal(ai.status,200,JSON.stringify(ai));assert.equal(typeof ai.data.summary,'string');assert.ok(ai.data.score>=0&&ai.data.score<=100);console.log('PASS: real Gemini structured recommendation');const brief=await req(b,'/api/briefing',{language:'en'});assert.equal(brief.status,200,JSON.stringify(brief));assert.ok(!brief.data.items.some(x=>x.id===demoCreated.data.id));assert.equal(brief.data.language,'en');console.log('PASS: real Gemini event/host notice translation');}
+ const originalId=a.id;const savedDevice=a.cookies.spatial_device;delete a.cookies.spatial_device;const legacy=await req(a,'/api/device-accounts');assert.equal(legacy.status,200);assert.equal(legacy.data.accounts[0].id,originalId);assert.equal(legacy.data.persisted,false);a.cookies.spatial_device=savedDevice;
+ const freshPassword='Fixture!'+randomUUID();assert.equal((await req(a,'/api/auth',{mode:'register',handle:'second_'+suffix,name:'Second account',password:freshPassword})).status,200);await boot(a);assert.notEqual(a.id,originalId);
+ const linked=await req(a,'/api/device-accounts');assert.equal(linked.status,200);assert.equal(linked.data.accounts.length,2);
+ const deletionId=a.id;
+ assert.equal((await req(a,'/api/delete-account',{mode:'complete',password:freshPassword})).status,400,'deletion requires a prior request');
+ assert.equal((await req(a,'/api/delete-account',{mode:'request',password:'wrong password'})).status,400);
+ assert.equal((await req(a,'/api/delete-account',{mode:'request',password:freshPassword})).status,200);
+ assert.ok((await boot(a)).me.deletion_requested_at);
+ assert.equal((await req(a,'/api/delete-account',{mode:'cancel'})).status,200);
+ assert.equal((await boot(a)).me.deletion_requested_at,null);
+ assert.equal((await req(a,'/api/delete-account',{mode:'request',password:freshPassword})).status,200);
+ assert.equal((await req(a,'/api/delete-account',{mode:'complete',password:freshPassword})).status,200);
+ assert.equal((await boot(a)).me,null);
+ assert.equal((await req(a,'/api/device-accounts')).data.accounts.some(x=>x.id===deletionId),false);
+ assert.equal((await req(a,'/api/device-accounts')).data.accounts.some(x=>x.id===originalId),true,'deleting one account must preserve other linked accounts');
+ assert.equal((await req(b,'/api/switch-account',{id:originalId})).status,400,'other device may not switch');
+ assert.equal((await req(a,'/api/switch-account',{id:originalId})).status,200);await boot(a);assert.equal(a.id,originalId);
+ assert.equal((await req(a,'/api/logout',{})).status,200);assert.equal((await act(a,'follow',{id:b.id,active:true})).status,400);
+ assert.equal((await req(a,'/api/switch-account',{id:originalId})).status,400,'logged out account removed from device');
+ console.log('Fixture event:',eid);console.log('PASS: unique identities, owner checks, RSVP/room access, public comments, private image ACL, leave/revoke, groups, idempotency, CSRF, calendar reminders, logout');
+ }catch(e){console.error(e);console.error(output);process.exitCode=1;}finally{server?.kill();}})();
+
+
+
+

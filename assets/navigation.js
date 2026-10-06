@@ -1,0 +1,46 @@
+/* Renderer-independent navigation model. GPS projection is not a world anchor. */
+(function(host){
+'use strict';
+/** @typedef {'PLANNING'|'STOPPED'|'WALKING'|'CYCLING'|'DRIVING'|'DECISION_POINT'|'HAZARD_ZONE'|'ARRIVED'} NavigationState */
+/** @typedef {'WALKING'|'BICYCLING'|'DRIVING'} TransportMode */
+/** @typedef {{lat:number,lon:number}} Point */
+/** @typedef {Point & {accuracy:number,timestamp:number,speed?:number|null,heading?:number|null}} Fix */
+/** @typedef {{path:Point[],steps?:{start?:Point|null,text?:string,maneuver?:string}[],mode:'WALKING'|'BICYCLING'|'DRIVING',durationMillis:number}} Route */
+/** @typedef {{verified:boolean,accuracy:number,timestamp:number}} SpatialPose */
+const CONFIG=Object.freeze({stopSpeed:.45,stopDwellMs:10000,cycleSpeed:3.2,driveSpeed:9,staleMs:12000,highAccuracy:8,mediumAccuracy:35,arrivalRadius:15,arrivalFixes:3,decisionFar:50,decisionNear:20,hazardRadius:25,highlightMeters:300,paceDistances:[8,16,26],rewardIntervalMs:5000});
+const STATES=Object.freeze(['PLANNING','STOPPED','WALKING','CYCLING','DRIVING','DECISION_POINT','HAZARD_ZONE','ARRIVED']);
+const rad=Math.PI/180;
+function distance(a,b){const x=(b.lat-a.lat)*rad,y=(b.lon-a.lon)*rad;return 12742000*Math.asin(Math.min(1,Math.sqrt(Math.sin(x/2)**2+Math.cos(a.lat*rad)*Math.cos(b.lat*rad)*Math.sin(y/2)**2)));}
+function bearing(a,b){const x=a.lat*rad,y=b.lat*rad,d=(b.lon-a.lon)*rad;return(Math.atan2(Math.sin(d)*Math.cos(y),Math.cos(x)*Math.sin(y)-Math.sin(x)*Math.cos(y)*Math.cos(d))/rad+360)%360;}
+const wrap=n=>((n+540)%360)-180;
+/** @param {Point[]} path */
+function geometry(path){let length=0;const cumulative=[0];for(let i=1;i<path.length;i++){length+=distance(path[i-1],path[i]);cumulative.push(length);}return {path,cumulative,length};}
+/** @param {ReturnType<typeof geometry>} g @param {Point} fix */
+function match(g,fix){let best={index:0,progress:0,offRoute:Infinity,point:g.path[0]};for(let i=1;i<g.path.length;i++){const a=g.path[i-1],b=g.path[i],scale=Math.cos(fix.lat*rad),ax=(a.lon-fix.lon)*scale,ay=a.lat-fix.lat,bx=(b.lon-fix.lon)*scale,by=b.lat-fix.lat,dx=bx-ax,dy=by-ay,t=Math.max(0,Math.min(1,-(ax*dx+ay*dy)/(dx*dx+dy*dy||1))),point={lat:a.lat+(b.lat-a.lat)*t,lon:a.lon+(b.lon-a.lon)*t},off=distance(fix,point);if(off<best.offRoute)best={index:i-1,progress:g.cumulative[i-1]+(g.cumulative[i]-g.cumulative[i-1])*t,offRoute:off,point};}return best;}
+/** @param {ReturnType<typeof geometry>} g @param {number} meters */
+function along(g,meters){if(!g.path.length)return null;const s=Math.max(0,Math.min(g.length,meters));let i=1;while(i<g.path.length-1&&g.cumulative[i]<s)i++;const a=g.path[i-1],b=g.path[i]||a,t=(s-g.cumulative[i-1])/(g.cumulative[i]-g.cumulative[i-1]||1);return {lat:a.lat+(b.lat-a.lat)*t,lon:a.lon+(b.lon-a.lon)*t};}
+/** @param {Route} route @param {ReturnType<typeof geometry>} g */
+function decisions(route,g){const out=[];for(const s of route.steps||[]){if(!s.start||!s.maneuver||/STRAIGHT|DEPART/i.test(s.maneuver))continue;const p=match(g,s.start);if(p.offRoute<25)out.push({progress:p.progress,point:s.start,maneuver:s.maneuver,angle:/LEFT/i.test(s.maneuver)?-90:/RIGHT/i.test(s.maneuver)?90:180});}if(!out.length){for(let i=2;i<g.path.length-2;i++){const back=along(g,g.cumulative[i]-12),ahead=along(g,g.cumulative[i]+12),angle=wrap(bearing(g.path[i],ahead)-bearing(back,g.path[i]));if(Math.abs(angle)>42&&(!out.length||g.cumulative[i]-out[out.length-1].progress>30))out.push({progress:g.cumulative[i],point:g.path[i],maneuver:angle<0?'TURN_LEFT':'TURN_RIGHT',angle});}}return out.sort((a,b)=>a.progress-b.progress);}
+/** @param {Partial<Route>} route @param {ReturnType<typeof geometry>} g */
+function hazards(route,g){return (route.steps||[]).filter(s=>s.start&&/crosswalk|railway|crossing|stairs|steps|construction|踏切|横断|階段|工事|段差/i.test(s.text||'')).map(s=>({point:s.start,progress:match(g,s.start).progress,type:'route_instruction'}));}
+/** @typedef {'HIGH'|'MEDIUM'|'LOW'} Confidence */
+/** @param {Fix|null} fix @param {number|null} heading @param {number} at @param {SpatialPose|null} pose @returns {Confidence} */
+function confidence(fix,heading,at,pose){if(!fix||at-fix.timestamp>CONFIG.staleMs||fix.accuracy>CONFIG.mediumAccuracy||heading===null)return 'LOW';// Only a separately validated spatial-pose provider can unlock world anchoring.
+return pose?.verified===true&&pose.accuracy<=CONFIG.highAccuracy&&at-pose.timestamp<1500&&fix.accuracy<=CONFIG.highAccuracy?'HIGH':'MEDIUM';}
+/** @param {NavigationState} state @param {TransportMode} mode @param {Confidence} level */
+function policy(state,mode,level){const planning=state==='PLANNING',stopped=state==='STOPPED',arrived=state==='ARRIVED',hazard=state==='HAZARD_ZONE',driving=mode==='DRIVING'||state==='DRIVING',cycling=mode==='BICYCLING'||state==='CYCLING',detail=planning||stopped||arrived,safe=!hazard&&!driving&&!cycling;
+return {detail,street:planning||stopped,camera:!driving,pace:safe&&!planning&&!arrived&&!stopped&&level!=='LOW',gate:safe&&state==='DECISION_POINT'&&level!=='LOW',compass:!planning&&!arrived&&level!=='LOW',coins:safe&&!planning&&!arrived&&level==='HIGH',poi:safe&&(planning||stopped)&&level!=='LOW',character:arrived||safe&&stopped,controls:!hazard&&(planning||stopped||arrived),audio:!planning,worldAnchored:level==='HIGH'};}
+/** @param {Partial<typeof CONFIG>} config */
+function create(config={}){const cfg={...CONFIG,...config};/** @type {Route|null} */ let route=null;let g=geometry([]),turns=[],danger=[],active=false,fix=null,last=null,heading=null,pose=null,speed=0,stopSince=null,arrivalHits=0,arrived=false;
+/** @type {NavigationState} */
+let state='PLANNING';
+function snapshot(at=Date.now()){const progress=fix&&g.path.length?match(g,fix):{progress:0,index:0,offRoute:Infinity,point:null},remaining=Math.max(0,g.length-progress.progress),next=turns.find(t=>t.progress>=progress.progress-5)||null,nextDistance=next?Math.max(0,next.progress-progress.progress):remaining,level=confidence(fix,heading,at,pose),fresh=!!fix&&at-fix.timestamp<cfg.staleMs,stopped=fresh&&stopSince!==null&&at-stopSince>=cfg.stopDwellMs;
+const detected=speed>=cfg.driveSpeed?'DRIVING':speed>=cfg.cycleSpeed?'BICYCLING':route?.mode||'WALKING',mode=route?.mode==='DRIVING'?'DRIVING':detected;
+const dangerHere=active&&fresh&&danger.some(h=>distance(fix,h.point)<=cfg.hazardRadius+Math.min(fix.accuracy,15));
+state=!active?(fresh&&speed>=cfg.driveSpeed?'DRIVING':fresh&&speed>=cfg.cycleSpeed?'CYCLING':'PLANNING'):dangerHere?'HAZARD_ZONE':arrived?'ARRIVED':stopped?'STOPPED':mode==='DRIVING'?'DRIVING':mode==='BICYCLING'?'CYCLING':next&&nextDistance<=cfg.decisionFar?'DECISION_POINT':'WALKING';
+const view=policy(state,mode,level);if(!fresh&&active){view.pace=false;view.gate=false;view.compass=false;view.coins=false;view.poi=false;view.character=false;view.street=false;view.controls=false;}
+return {state,mode,confidence:level,speed,fresh,progress,remaining,next,nextDistance,gateStage:nextDistance<=8?3:nextDistance<=cfg.decisionNear?2:1,delta:heading===null||!fix||!g.path.length?null:wrap(bearing(fix||g.path[0]||{lat:0,lon:0},next?.point||along(g,progress.progress+15)||{lat:0,lon:0})-heading),etaMs:route?route.durationMillis*Math.min(1,remaining/(g.length||1)):0,policy:view,pace:view.pace?cfg.paceDistances.map(d=>along(g,progress.progress+d)).filter(Boolean):[],hazards:danger,geometry:g};}
+return {/** @param {Route} r */ setRoute(r){route=r;g=geometry(r.path);turns=decisions(r,g);danger=hazards(r,g);active=false;arrived=false;arrivalHits=0;},start(){active=true;},stop(){active=false;arrived=false;},clearRoute(){route=null;g=geometry([]);turns=[];danger=[];active=false;arrived=false;arrivalHits=0;},setHazards(items){danger=[...hazards(route||{},g),...items.filter(h=>h.point)];},setPose(p){pose=p;},heading(value){heading=Number.isFinite(value)?value:null;},fix(p,at=Date.now()){if(!p){fix=null;last=null;stopSince=null;return;}if(last&&p.timestamp<=last.timestamp)return;const dt=last?(p.timestamp-last.timestamp)/1000:0,measured=dt>0&&dt<30&&p.accuracy<25&&last.accuracy<25?Math.max(0,distance(last,p)-Math.max(p.accuracy,last.accuracy))/dt:0;speed=Math.max(Number.isFinite(p.speed)?p.speed:0,measured);stopSince=speed<=cfg.stopSpeed?(stopSince??at):null;fix=p;last=p;const end=g.path.at(-1),m=g.path.length?match(g,p):null;arrivalHits=active&&speed<=cfg.stopSpeed&&end&&p.accuracy<=cfg.arrivalRadius&&at-p.timestamp<cfg.staleMs&&m&&m.offRoute<=cfg.arrivalRadius&&g.length-m.progress<=cfg.arrivalRadius&&distance(p,end)<=cfg.arrivalRadius?arrivalHits+1:0;if(arrivalHits>=cfg.arrivalFixes)arrived=true;},snapshot,geometry:()=>g};}
+function segments(g,progress,active){const bands=active?[{from:progress,to:progress+CONFIG.highlightMeters,opacity:1,weight:6},{from:progress+CONFIG.highlightMeters,to:g.length,opacity:.22,weight:4}]:[{from:0,to:g.length,opacity:.75,weight:5}];return bands.filter(b=>b.from<g.length).map(b=>({...b,path:[along(g,b.from),...g.path.filter((_,i)=>g.cumulative[i]>b.from&&g.cumulative[i]<b.to),along(g,Math.min(b.to,g.length))]}));}
+const api={CONFIG,STATES,distance,bearing,wrap,geometry,match,along,decisions,confidence,policy,create,segments};if(typeof module!=='undefined'&&module.exports)module.exports=api;else host.SpatialNavigation=api;
+})(/** @type {Window & typeof globalThis} */(typeof window==='undefined'?{}:window));

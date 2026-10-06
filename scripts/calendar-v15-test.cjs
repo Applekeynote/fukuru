@@ -1,0 +1,14 @@
+'use strict';
+const assert=require('node:assert/strict');
+const {operations}=require('../assets/calendar-sync.js');
+const marker={app:'fukuru',owner:'u',event:'a'};
+const plan={owner:'u',events:[{id:'a',summary:'Photo',extendedProperties:{private:marker}}]};
+assert.equal(operations(plan,[])[0].kind,'insert');
+assert.equal(operations(plan,[{...plan.events[0],etag:'1'}])[0].kind,'update');
+assert.throws(()=>operations(plan,[{id:'a',extendedProperties:{private:{app:'another'}}}]));
+const id='a'.repeat(64);assert.equal(operations({owner:'u',events:[{id,summary:'Legacy'}]},[{id,summary:'Legacy'}])[0].kind,'update');
+const old={id:'removed',summary:'Book',extendedProperties:{private:{...marker,event:'b'}},etag:'2'};
+const result=operations(plan,[old,{id:'foreign',summary:'Private',extendedProperties:{private:{app:'fukuru',owner:'someone'}}}]);
+assert.equal(result.length,2);assert.equal(result[1].kind,'withdraw');assert.equal(result[1].body.summary,'参加取消・中止 · Book');
+assert.equal(operations(plan,[result[1].body]).length,1);
+console.log('PASS calendar insert/update, foreign ownership refusal, cancellation annotation and idempotence');

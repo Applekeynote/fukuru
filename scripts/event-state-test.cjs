@@ -1,0 +1,18 @@
+const assert=require('node:assert/strict');
+const s=require('../assets/event-state.js');
+const start=Date.parse('2026-10-03T15:00:00+09:00'),end=start+3600000;
+const e={id:'school',start:new Date(start).toISOString(),end:new Date(end).toISOString(),status:'active'};
+assert.equal(s.phase(e,start-1),'upcoming');
+assert.equal(s.phase(e,start),'live');
+assert.equal(s.phase(e,end-1),'live');
+assert.equal(s.phase(e,end),'ended');
+assert.equal(s.phase({...e,status:'canceled'},start),'canceled');
+assert.equal(s.phase({...e,deleted:true},start),'canceled');
+assert.equal(s.phase({...e,start:'bad'},start),'unknown');
+assert.equal(s.phase({...e,end:e.start},start),'unknown');
+assert.equal(s.label({...e,demo:true},start),'開催中');
+assert.equal(s.label({...e,demo:true},start-1),'開催予定');
+const n={dataset:{},setAttribute(k,v){this[k]=v;},textContent:''};
+s.update(n,e,start);assert.equal(n.className,'ev-state ev-state--live');assert.equal(n.textContent,'開催中');
+s.update(n,e,end);assert.equal(n.className,'ev-state ev-state--ended');assert.equal(n.textContent,'終了');
+console.log('PASS exact start/end, cancellation, invalid dates, unified labels and in-place transitions');

@@ -1,0 +1,11 @@
+const assert=require('node:assert/strict'),r=require('../assets/routes.js');
+assert.equal(r.wrap(359),-1);assert.equal(r.wrap(-359),1);
+assert(Math.abs(r.projectBearing(1,359,0,100,70,1).x-.5)<.03);
+assert.equal(r.projectBearing(180,0),null);assert.equal(r.projectBearing(85,0).visible,false);
+const distance=(a,b)=>Math.abs(a.lat-b.lat);assert.deepEqual(r.routeProgress([{lat:0},{lat:10},{lat:20}],{lat:9},distance),{index:1,remaining:11});
+assert.deepEqual(r.routeProgress([],{lat:0},distance),{index:0,remaining:0});
+console.log('PASS: heading wrap, behind-camera suppression, camera projection, path progress');
+assert.equal(r.duration(120000),'2分');assert.equal(r.duration(3660000),'1時間1分');assert.equal(r.duration(undefined),'所要時間を取得できません');
+assert(r.densify([{lat:0,lon:0},{lat:100,lon:0}],distance,8).length>10);
+const calls=[];global.google={maps:{importLibrary:async()=>({Route:{computeRoutes:async q=>{calls.push(q);return {routes:[{path:[{lat:1,lng:2},{lat:2,lng:3}],durationMillis:600000,distanceMeters:1200,warnings:[],legs:[{steps:[{instructions:'右へ'}]}]}]};}}})}};
+(async()=>{for(const mode of ['WALKING','BICYCLING','DRIVING']){const result=await r.route({lat:1,lon:2},{id:'venue',lat:2,lon:3},mode);assert.equal(result.mode,mode);assert.equal(result.durationMillis,600000);assert.equal(result.steps[0].text,'右へ');}assert.deepEqual(calls.map(c=>c.travelMode),['WALKING','BICYCLING','DRIVING']);assert(calls[0].fields.includes('durationMillis'));console.log('PASS: three route modes, Google field masks, duration and densification');})().catch(e=>{console.error(e);process.exitCode=1;});

@@ -1,0 +1,7 @@
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY spatial_community /usr/local/bin/spatial_community
+USER 65532:65532
+ENV PORT=8080
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/spatial_community"]

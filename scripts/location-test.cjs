@@ -1,0 +1,14 @@
+const assert=require('node:assert/strict');const {create,errorMessage}=require('../assets/location.js');
+let calls=[],cleared=[],fixes=[],errors=[];
+const geo={watchPosition:(ok,fail,opts)=>{calls.push({ok,fail,opts});return calls.length;},clearWatch:id=>cleared.push(id)};
+const c=create({geo,onFix:f=>fixes.push(f),onStatus:()=>{},onError:e=>errors.push(e)});
+c.start();assert.equal(calls[0].opts.enableHighAccuracy,false);calls[0].fail({code:3});assert.equal(calls[1].opts.enableHighAccuracy,true);
+calls[0].ok({coords:{latitude:35,longitude:139,accuracy:10},timestamp:1});assert.equal(fixes.length,0);
+calls[1].ok({coords:{latitude:35,longitude:139,accuracy:10},timestamp:1});assert.equal(fixes.at(-1).source,'device');
+c.stop();calls[1].ok({coords:{latitude:36,longitude:140,accuracy:5},timestamp:2});assert.equal(fixes.at(-1),null);
+c.start();calls[2].fail({code:1});assert.equal(calls.length,3);assert.equal(errors.at(-1).code,1);assert.equal(c.isActive(),false);
+assert.match(errorMessage({code:1},{userAgent:'iPhone',standalone:true}),/ホーム画面のSpatial/);
+assert.match(errorMessage({code:1},{userAgent:'iPhone',standalone:true}),/Chromeの許可だけでは/);
+assert.match(errorMessage({code:1},{userAgent:'iPhone',standalone:false}),/ブラウザの許可/);
+assert.match(errorMessage({code:3},{userAgent:'iPhone',standalone:true}),/地域名を入力/);
+console.log('PASS: accuracy fallback, stale callback rejection, clear on stop, no retry after denial (simulated platform tests)');

@@ -1,0 +1,41 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+const {JSDOM}=require('../target/navigation-tools/node_modules/jsdom');
+const root=path.join(__dirname,'../assets'),dom=new JSDOM('<main></main><div id="poyo-root"><button id="poyo-toggle"></button><section id="cx-poyo-panel" hidden></section></div>',{url:'http://127.0.0.1/',runScripts:'outside-only',pretendToBeVisual:true}),w=dom.window;
+let clock=Date.now(),geoSuccess,poseSubscriber,trackStopped=false,poyoClicks=0;
+w.Date.now=()=>clock;w.isSecureContext=true;w.ResizeObserver=class {observe(){}disconnect(){}};
+w.HTMLCanvasElement.prototype.getContext=()=>({scale(){},fillRect(){},beginPath(){},moveTo(){},lineTo(){},stroke(){},arc(){},fill(){},fillText(){}});
+w.HTMLElement.prototype.scrollIntoView=()=>{};
+Object.defineProperty(w.HTMLElement.prototype,'clientWidth',{get:()=>390});
+Object.defineProperty(w.HTMLElement.prototype,'clientHeight',{get:()=>640});
+w.HTMLElement.prototype.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:390,bottom:640,width:390,height:640});
+w.fetch=async()=>({json:async()=>({nearby:[],alerts:[],available:false,links:[]})});
+Object.defineProperty(w.navigator,'userAgent',{value:'iPhone navigation test'});Object.defineProperty(w.navigator,'maxTouchPoints',{value:5});
+Object.defineProperty(w.navigator,'geolocation',{value:{watchPosition(ok){geoSuccess=ok;return 1;},clearWatch(){}}});
+Object.defineProperty(w.navigator,'mediaDevices',{value:{getUserMedia:async()=>({getTracks:()=>[{stop(){trackStopped=true;}}]})}});
+w.google={maps:{Map:class {},OverlayView:class{setMap(map){this.map=map;}},StreetViewService:class{async getPanorama(){return{data:{location:{pano:'local-fixture',latLng:{lat:()=>35.001,lng:()=>139}}}};}},StreetViewPanorama:class{constructor(){this.visible=false;this.listeners={};}addListener(name,fn){this.listeners[name]=fn;}setPano(){}setVisible(v){this.visible=v;this.listeners.visible_changed?.();}getVisible(){return this.visible;}getPosition(){return{lat:()=>35.001,lng:()=>139};}setPov(){this.listeners.pov_changed?.();}},event:{clearInstanceListeners(){}}}};
+for(const file of ['location.js','event-state.js','routes.js','navigation.js','navigation-rewards.js','navigation-renderer.js','spatial.js'])w.eval(fs.readFileSync(path.join(root,file),'utf8'));
+const origin={lat:35,lon:139},turn={lat:35.001,lon:139},end={lat:35.001,lon:139.001};let hazardous=false;
+w.SpatialRoutes.route=async(from,to,mode)=>({path:[origin,turn,end],steps:[{start:turn,maneuver:'TURN_RIGHT',text:hazardous?'横断歩道':'右折'}],mode,durationMillis:240000,distanceMeters:200,warnings:[]});
+const event={id:'e',name:'寄り道の目的地',place:'会場',lat:end.lat,lon:end.lon,start:new Date(clock+60000).toISOString(),end:new Date(clock+86400000).toISOString(),kind:'WALK',demo:true},otherPlan={...event,id:'mine',name:'次の参加予定',owner:'me',lon:139},state={events:[event,otherPlan],following:[],google_maps_key:'',me:{id:'me'}};
+w.document.querySelector('main').innerHTML=w.SpatialExplore.page();w.document.querySelector('#poyo-toggle').onclick=()=>poyoClicks++;
+const mount=w.SpatialExplore.mount({getState:()=>state,esc:x=>String(x??''),go(){},comment(){},propose(){},selected:'e',poseProvider:{subscribe(fn){poseSubscriber=fn;return()=>{};}}});
+const $=s=>w.document.querySelector(s),tick=()=>new Promise(r=>setImmediate(r));
+function fix(point,speed=0,accuracy=5){geoSuccess({coords:{latitude:point.lat,longitude:point.lon,accuracy,speed,heading:0},timestamp:clock});}
+function heading(){const e=new w.Event('deviceorientation');Object.assign(e,{absolute:true,alpha:0});w.dispatchEvent(e);}
+(async()=>{
+assert.equal($('#sx-locate'),null);assert.equal(typeof geoSuccess,'function','map mount must start geolocation');fix(origin);$('#sx-events [data-guide]').click();await tick();await tick();assert.equal($('.sx-explore').dataset.navigation,'WALKING');assert.equal($('#sn-start').disabled,false);$('#sx-ar-directions').click();await tick();await tick();assert.equal($('.sx-explore').dataset.navigation,'PLANNING');assert.equal($('#sx-street-shell').hidden,true);
+$('#sn-preview').click();await tick();await tick();assert.equal($('#sx-street-shell').hidden,false);assert($('.sx-stage').classList.contains('sn-two-pane'));$('#sx-camera').click();await tick();heading();assert.equal($('#sx-ar').hidden,false);const controls=['#sx-ar-fullscreen','#sx-ar-directions','#sx-ar-stop','#sx-ar-hologram'].map($);
+$('#sn-start').click();assert.equal($('.sx-explore').dataset.navigation,'WALKING');assert.equal($('.sn-pace').hidden,false);assert.equal($('#sx-street-shell').hidden,true);assert.equal($('#sx-ar-hologram').hidden,true);
+for(let i=0;i<100;i++)heading();controls.forEach((control,i)=>assert.equal(control,$(['#sx-ar-fullscreen','#sx-ar-directions','#sx-ar-stop','#sx-ar-hologram'][i])));
+clock+=11000;fix(origin,0);heading();assert.equal($('.sx-explore').dataset.navigation,'STOPPED');assert.equal($('#sx-ar-hologram').hidden,false);$('#sx-ar-hologram').click();assert.equal(poyoClicks,1);
+$('#sx-ar-fullscreen').click();await tick();assert.equal($('#sx-ar-fullscreen').getAttribute('aria-pressed'),'true');$('#sx-ar-fullscreen').click();await tick();assert.equal($('#sx-ar-fullscreen').getAttribute('aria-pressed'),'false');
+clock+=50000;fix({lat:35.0008,lon:139},1);heading();assert.equal($('.sx-explore').dataset.navigation,'DECISION_POINT');assert.equal($('.sn-gate').hidden,false);assert.equal($('#sx-ar-route').hidden,true);assert(!$('#sx-ar-route').innerHTML.includes('polyline'));
+clock+=5000;fix({lat:35.0008,lon:139},1,80);heading();assert.equal($('.sn-pace').hidden,true);assert.equal($('.sn-gate').hidden,true);assert.equal($('.sn-edge').hidden,true);
+clock+=15000;fix({lat:35.0008,lon:139},0,5);heading();clock+=11000;fix({lat:35.0008,lon:139},0,5);heading();assert.equal($('.sx-explore').dataset.navigation,'STOPPED');
+hazardous=true;$('#sx-navigation [data-travel-mode=WALKING]').click();await tick();await tick();$('#sn-start').click();clock+=50000;fix({lat:35.0009,lon:139},1,5);heading();assert.equal($('.sx-explore').dataset.navigation,'HAZARD_ZONE');assert.equal($('.sn-pace').hidden,true);assert.equal($('.sn-gate').hidden,true);assert.equal($('.sn-coin').hidden,true);assert.equal($('#sx-ar-hologram').hidden,true);assert.equal($('#sx-street-shell').hidden,true);
+clock+=15000;fix(origin,0);clock+=11000;fix(origin,0);clock+=11000;fix(origin,0);heading();assert.equal($('.sx-explore').dataset.navigation,'STOPPED');hazardous=false;$('#sx-navigation [data-travel-mode=BICYCLING]').click();await tick();await tick();$('#sn-start').click();clock+=5000;fix(origin,6);heading();assert.equal($('.sx-explore').dataset.navigation,'CYCLING');assert.equal($('.sn-pace').hidden,true);assert.equal($('.sn-coin').hidden,true);assert.equal($('#sx-ar-hologram').hidden,true);assert.equal($('#sx-street-shell').hidden,true);
+clock+=15000;fix(origin,0);clock+=11000;fix(origin,0);clock+=11000;fix(origin,0);heading();assert.equal($('.sx-explore').dataset.navigation,'STOPPED');
+$('#sx-navigation [data-travel-mode=WALKING]').click();await tick();await tick();$('#sx-planned [data-guide=mine]').click();await tick();await tick();clock+=11000;fix(origin,0);heading();assert.equal($('.sx-explore').dataset.navigation,'STOPPED');assert($('#sx-ar-pins [data-venue=mine]'),'New destination marker must replace the previously selected demo');assert(!$('#sx-ar-pins [data-venue=e]'));
+$('#sx-navigation [data-travel-mode=DRIVING]').click();await tick();await tick();assert.equal($('#sx-ar').hidden,true);assert(trackStopped);assert.equal($('#sx-camera').hidden,true);
+console.log('PASS real mount + renderers: planning/start, Street View gating, pace, turn gate, hazard + cycling fade, low confidence, stable controls under 100 orientation updates, iPhone fullscreen fallback, stopped Poyo, driving camera stop');
+})().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>{mount.stop();w.close();});
