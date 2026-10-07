@@ -10,7 +10,7 @@
 - 移動状態と位置精度に応じたナビ表示、サーバーで検証する報酬処理
 - 開催地の天気、AIによる服装・準備・行程の提案
 - トーク、メンション、通知、Web Push、プロフィール
-- 予定のGoogleカレンダーへの一方向反映（本人のOAuth許可が必要）
+- 予定のGoogleカレンダーへの一方向反映（ふくる専用カレンダー・本人のOAuth許可が必要）
 
 ## 構成
 Rust / Axum、HTML / CSS / JavaScript、Service Worker。Cloud Run、Spanner、Vertex AI / Gemini、Google Maps / Routes / Geocoding、Open-Meteoを利用します。バックアップはCloud Scheduler / Cloud Run Jobs / Cloud Storage、監視はCloud Monitoringです。
@@ -37,7 +37,7 @@ JavaScript検証では `scripts/navigation-tools.package.json` の依存を `tar
 - `docs/`: 検証記録と設計
 
 ## ソースの対応
-本番反映対象はv15a（2026-10-07）。承認済みアーカイブのSHA-256は `80C7120053535745B7DF19FE0F4198F6F672B848BF15EDEFA1E6F3F9DBE31C03` です。このリポジトリにはアーカイブの124ファイルを展開し、READMEと.gitignoreを加えています。DB、ログ、認証情報、実アカウントの画像は含みません。
+本番反映対象はv16（2026-10-07）。承認済みアーカイブのSHA-256は `7B170E2DF25F6DD819E6AFFCC8CE130A47B39BB9FF9BFCE4EB594995D3EE53C3` です。このリポジトリにはアーカイブのソースに、README・.gitignoreと本番反映記録を加えています。DB、ログ、認証情報、実アカウントの画像は含みません。
 
 ## 提供期間
 2026-10-15 00:00 JSTからAIの日次回数制限を解除する実装です。2027-01-01 00:00 JSTからアプリ機能を停止します。クラウドの課金停止予約は別設定で、変更完了までは `docs` の運用記録を確認してください。
