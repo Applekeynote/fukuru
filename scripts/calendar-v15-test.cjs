@@ -6,7 +6,7 @@ const plan={owner:'u',events:[{id:'a',summary:'Photo',extendedProperties:{privat
 assert.equal(operations(plan,[])[0].kind,'insert');
 assert.equal(operations(plan,[{...plan.events[0],etag:'1'}])[0].kind,'update');
 assert.throws(()=>operations(plan,[{id:'a',extendedProperties:{private:{app:'another'}}}]));
-const id='a'.repeat(64);assert.equal(operations({owner:'u',events:[{id,summary:'Legacy'}]},[{id,summary:'Legacy'}])[0].kind,'update');
+const id='a'.repeat(64);assert.throws(()=>operations({owner:'u',events:[{id,summary:'Legacy'}]},[{id,summary:'Legacy'}]));
 const old={id:'removed',summary:'Book',extendedProperties:{private:{...marker,event:'b'}},etag:'2'};
 const result=operations(plan,[old,{id:'foreign',summary:'Private',extendedProperties:{private:{app:'fukuru',owner:'someone'}}}]);
 assert.equal(result.length,2);assert.equal(result[1].kind,'withdraw');assert.equal(result[1].body.summary,'参加取消・中止 · Book');

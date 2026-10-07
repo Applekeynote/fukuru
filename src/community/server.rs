@@ -216,6 +216,7 @@ pub fn router(a: App) -> Router {
         .route("/calendar.ics", get(calendar))
         .route("/api/google-event", post(google_event))
         .route("/api/google-calendar-plan",get(google_calendar_plan))
+        .route("/api/google-calendar-link",post(google_calendar_link))
         .route("/api/planner",post(ai_planner))
         .route("/calendar-sync.js",get(||async{([(header::CONTENT_TYPE,"text/javascript")],include_str!("../../assets/calendar-sync.js"))}))
         .route(

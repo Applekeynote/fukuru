@@ -99,9 +99,53 @@ async fn google_calendar_plan(State(a): State<App>, h: HeaderMap) -> Response {
         Err(e) => error(e),
     }
 }
+// This fingerprint is a mapping key, never an identity or authorization assertion.
+fn calendar_link_record(r: &mut super::store::Records, user: &str, v: &Value) -> Result<Value> {
+    let fp = v["fingerprint"].as_str().unwrap_or("");
+    if fp.len()!=64 || !fp.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+        return Err("カレンダーの識別情報を確認してください".into());
+    }
+    let id = format!("{user}:{fp}");
+    match v["op"].as_str() {
+        Some("get") => Ok(json!({"calendar_id":m::get(r,"google_calendar_link",&id).and_then(|x|x["calendar_id"].as_str()).unwrap_or("")})),
+        Some("set") => {
+            let cal=v["calendar_id"].as_str().unwrap_or("");
+            if cal.len()>256 || !cal.ends_with("@group.calendar.google.com") || !cal.bytes().all(|b|b.is_ascii_alphanumeric() || b"@._-".contains(&b)) {
+                return Err("専用カレンダーを確認してください".into());
+            }
+            m::put(r,"google_calendar_link",&id,json!({"owner":user,"calendar_id":cal,"updated":m::now()}));
+            Ok(json!({"calendar_id":cal}))
+        },
+        _ => Err("操作を確認してください".into())
+    }
+}
+async fn google_calendar_link(State(a): State<App>, h: HeaderMap, Json(v): Json<Value>) -> Response {
+    if !csrf(&a,&h,&v) {return StatusCode::FORBIDDEN.into_response();}
+    let user=match who(&a,&h).await{Ok(u)=>u,Err(e)=>return error(e)};
+    if limited(&a,format!("calendar-link:{user}"),30,60).await{return error("少し待ってから再試行してください");}
+    match a.store.transact(|r|calendar_link_record(r,&user,&v)).await{Ok(x)=>Json(x).into_response(),Err(e)=>error(e)}
+}
 #[cfg(test)]
 mod planning_tests {
     use super::*;
+    #[test]
+    fn calendar_mapping_is_per_user_and_google_account() {
+        let mut r=super::super::store::Records::new();
+        let fp="a".repeat(64);
+        calendar_link_record(&mut r,"u",&json!({"op":"set","fingerprint":fp,"calendar_id":"abc@group.calendar.google.com"})).unwrap();
+        assert_eq!(calendar_link_record(&mut r,"u",&json!({"op":"get","fingerprint":fp})).unwrap()["calendar_id"],"abc@group.calendar.google.com");
+        assert_eq!(calendar_link_record(&mut r,"other",&json!({"op":"get","fingerprint":fp})).unwrap()["calendar_id"],"");
+        assert_eq!(calendar_link_record(&mut r,"u",&json!({"op":"get","fingerprint":"b".repeat(64)})).unwrap()["calendar_id"],"");
+        for cal in ["primary","person@gmail.com","../../primary@group.calendar.google.com"] {
+            assert!(calendar_link_record(&mut r,"u",&json!({"op":"set","fingerprint":fp,"calendar_id":cal})).is_err());
+        }
+        assert!(calendar_link_record(&mut r,"u",&json!({"op":"get","fingerprint":"bad"})).is_err());
+        m::put(&mut r,"account","u",json!({"id":"u","name":"test","handle":"tester"}));
+        let exported=m::export_personal_data(&r,"u").unwrap();
+        assert!(exported.to_string().contains("google_calendar_link"));
+        m::delete_account(&mut r,"u").unwrap();
+        assert_eq!(calendar_link_record(&mut r,"u",&json!({"op":"get","fingerprint":fp})).unwrap()["calendar_id"],"");
+    }
     #[test]
     fn calendar_only_authorized_joined_future_events() {
         let mut r = super::super::store::Records::new();

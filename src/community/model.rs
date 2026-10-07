@@ -73,7 +73,7 @@ pub fn export_personal_data(r: &Records, who: &str) -> Result<Value> {
         let mine=match scope.as_str() {
             "event"|"media"|"report"|"verification"|"social_audit"=>value["owner"]==who||value["author"]==who||value["reporter"]==who||value["requester"]==who||value["actor"]==who,
             "account_delete"|"preferences"|"navigation_wallet"=>id==who,
-            "navigation_session"|"navigation_ledger"=>value["owner"]==who,
+            "navigation_session"|"navigation_ledger"|"google_calendar_link"=>value["owner"]==who,
             "navigation_limit"|"navigation_daily"|"navigation_cooldown"=>id.starts_with(&format!("{who}:")),
             _ if scope==&format!("note:{who}")||scope==&format!("search:{who}")=>true,
             _ if scope.starts_with("collab:")=>value["author"]==who,
@@ -1070,6 +1070,7 @@ pub fn delete_account(r: &mut Records, who: &str) -> Result<()> {
         if scope.starts_with("feed_dismiss:") && (scope==&format!("feed_dismiss:{who}") || (value["kind"]=="host" && value["id"]==who) || (value["kind"]=="event" && owned_events.iter().any(|id|value["id"]==id.as_str()))) {return false;}
         if scope==&format!("draft:{who}") {return false;}
         if scope=="account_delete" && key==who {return false;}
+        if scope=="google_calendar_link" && value["owner"]==who {return false;}
         if scope.starts_with("notice:") || scope.starts_with("event_change:") || scope.starts_with("post:") {
             if owned_events.iter().any(|id|scope.ends_with(&format!(":{id}"))) || value["author"]==who {return false;}
         }
